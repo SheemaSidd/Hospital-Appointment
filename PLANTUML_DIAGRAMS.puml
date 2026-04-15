@@ -1,0 +1,578 @@
+@startuml SystemArchitecture
+!theme plain
+title Hospital Appointment Booking System - System Architecture
+
+package "Presentation Layer" {
+    component Streamlit as ST
+    component ChatInterface as CI
+    component FormInterface as FI
+}
+
+package "Application Logic Layer" {
+    component HospitalChat as HC
+    component ToolFunctions as TF
+    component ParseFunctions as PF
+}
+
+package "API Integration Layer" {
+    component GroqAPI as GA
+    component LLM as LLM_MODEL
+}
+
+package "Data Persistence Layer" {
+    database SQLiteDB as DB
+    entity AppointmentsTable as AT
+}
+
+CI --> HC: User message
+FI --> TF: Form submission
+HC --> GA: Tool definition + Message
+GA --> LLM_MODEL: Process request
+LLM_MODEL --> GA: Tool decision
+HC --> TF: Execute tool
+TF --> PF: Parse data
+PF --> TF: Formatted data
+TF --> DB: Query/Update
+DB --> AT: CRUD operations
+ST --> CI: Render chat
+ST --> FI: Render forms
+
+@enduml
+
+@startuml ChatFlow
+!theme plain
+title Chat Processing Flow
+
+start
+:User enters message;
+:Add to chat history;
+:Send to Groq API;
+:AI processes with tools;
+decision "Tool needed?"
+yes
+:Extract tool name & args;
+:Validate arguments;
+decision "All required?"
+no
+:Ask for missing info;
+:Return to user;
+stop
+yes
+:Execute tool function;
+:Get result;
+:Send result to Groq;
+:Get final response;
+:Add assistant message;
+:Display in chat;
+stop
+
+@enduml
+
+@startuml BookingSequence
+!theme plain
+title Appointment Booking Sequence Diagram
+
+participant User
+participant ChatUI as "Chat Interface"
+participant HospitalChat as "hospital_chat()"
+participant ToolFuncs as "Tool Functions"
+participant Database as "SQLite DB"
+participant GroqAPI as "Groq API"
+
+User -> ChatUI: Type booking request
+ChatUI -> HospitalChat: send user message
+HospitalChat -> GroqAPI: Create chat completion
+GroqAPI -> GroqAPI: Process with LLM
+GroqAPI -> HospitalChat: Return tool call
+HospitalChat -> ToolFuncs: extract & validate args
+ToolFuncs -> ToolFuncs: parse_natural_date()
+ToolFuncs -> ToolFuncs: parse_natural_time()
+ToolFuncs -> Database: SELECT availability
+Database -> ToolFuncs: return count
+ToolFuncs -> ToolFuncs: check if available
+alt Slot Available
+    ToolFuncs -> Database: INSERT appointment
+    Database -> ToolFuncs: success
+    ToolFuncs -> HospitalChat: confirmation message
+else Slot Not Available
+    ToolFuncs -> HospitalChat: suggest alternatives
+end
+HospitalChat -> GroqAPI: Send result back
+GroqAPI -> HospitalChat: Final response
+HospitalChat -> ChatUI: Display result
+ChatUI -> User: Show confirmation/error
+
+@enduml
+
+@startuml DatabaseSchema
+!theme plain
+title Database Schema - Appointments Table
+
+entity "appointments" {
+    * id: INTEGER (PK, AutoIncrement)
+    --
+    * name: TEXT
+    * date: TEXT (YYYY-MM-DD)
+    * time: TEXT (HH:MM:SS)
+    * phone: TEXT
+}
+
+note right of appointments
+  Constraints:
+  - PK: id (Auto-increment)
+  - Unique: (date, time)
+  - NOT NULL: All fields
+  - Format: ISO 8601 for date/time
+end note
+
+@enduml
+
+@startuml AvailabilityCheck
+!theme plain
+title Availability Checking Algorithm
+
+start
+:Input: date, time;
+:Connect to database;
+:Execute query:
+SELECT COUNT(*) FROM appointments
+WHERE date = ? AND time = ?;
+:Receive count result;
+decision "count == 0?"
+yes
+:Slot is AVAILABLE;
+:Return TRUE;
+:Close connection;
+stop
+no
+:Slot is NOT AVAILABLE;
+:Return FALSE;
+:Close connection;
+stop
+
+@enduml
+
+@startuml ModifyFlow
+!theme plain
+title Modify Appointment Flow
+
+start
+:User provides: ID, new_date, new_time;
+:Validate appointment_id is numeric;
+decision "Is numeric?"
+no
+:Return error;
+stop
+yes
+:Query appointment by ID;
+decision "Appointment exists?"
+no
+:Return "Not found" error;
+stop
+yes
+:Check if new slot available;
+decision "New slot available?"
+no
+:Return "Slot booked" error;
+stop
+yes
+:UPDATE appointment SET date=?, time=?;
+:COMMIT transaction;
+:Return success message;
+stop
+
+@enduml
+
+@startuml CancelFlow
+!theme plain
+title Cancel Appointment Flow
+
+start
+:User provides: appointment_id;
+:Convert to integer;
+decision "Valid integer?"
+no
+:Return error;
+stop
+yes
+:Query to find appointment;
+decision "Exists?"
+no
+:Return "Not found" error;
+stop
+yes
+:Store details for confirmation;
+:DELETE appointment;
+:COMMIT transaction;
+:Return cancellation confirmation;
+stop
+
+@enduml
+
+@startuml TimeParser
+!theme plain
+title Natural Time Parsing Algorithm
+
+start
+:Input: time_str;
+:Normalize: lowercase & trim;
+:Replace am/pm variants
+with uppercase AM/PM;
+:Initialize formats array:
+["%I:%M:%S %p", "%I:%M %p",
+ "%I %p", "%H:%M:%S", "%H:%M"];
+:For each format in formats;
+:Try to parse with format;
+decision "Parse successful?"
+yes
+:Convert to HH:MM:SS;
+:Return formatted time;
+stop
+no
+:Try next format;
+decision "More formats?"
+yes
+:Continue loop;
+no
+:Return input as-is;
+stop
+
+@enduml
+
+@startuml DateParser
+!theme plain
+title Natural Date Parsing Algorithm
+
+start
+:Input: date_str;
+:Normalize: lowercase & trim;
+:Get today's date;
+decision "date_str == 'today'?"
+yes
+:Calculate today's date;
+:Return YYYY-MM-DD;
+stop
+no
+decision "date_str == 'tomorrow'?"
+yes
+:Calculate tomorrow's date;
+:Return YYYY-MM-DD;
+stop
+no
+decision "date_str == 'next day'?"
+yes
+:Calculate day after tomorrow;
+:Return YYYY-MM-DD;
+stop
+no
+:Try to parse YYYY-MM-DD format;
+decision "Parse successful?"
+yes
+:Return formatted date;
+stop
+no
+:Return input as-is;
+stop
+
+@enduml
+
+@startuml SlotGeneration
+!theme plain
+title Slot Generation Algorithm
+
+start
+:Input: date (YYYY-MM-DD);
+:Query booked times
+SELECT time FROM appointments
+WHERE date = ?;
+:Convert to set for O(1) lookup;
+:Initialize available_slots list;
+:For hour = 9 to 16;
+  :For minute in [0, 30];
+    :Create time_slot (HH:MM:SS);
+    decision "In booked_set?"
+    no
+    :Add to available_slots;
+    yes
+    :Skip;
+    :Next minute;
+  :Next hour;
+decision "available_slots empty?"
+yes
+:Return "No available slots";
+stop
+no
+:Format as string with times;
+:Return formatted string;
+stop
+
+@enduml
+
+@startuml ComponentDependencies
+!theme plain
+title Component Dependencies
+
+package "Core Functions" {
+    [init_db]
+    [add_sample_appointments]
+}
+
+package "CRUD Operations" {
+    [book_appointment]
+    [view_appointments]
+    [get_appointments_data]
+    [modify_appointment]
+    [cancel_appointment]
+}
+
+package "Business Logic" {
+    [check_availability]
+    [get_available_slots]
+}
+
+package "Data Processing" {
+    [parse_natural_date]
+    [parse_natural_time]
+}
+
+package "AI Integration" {
+    [hospital_chat]
+    [Tool Definitions]
+}
+
+package "UI Components" {
+    [Chat Interface]
+    [View Tab]
+    [Book Tab]
+    [Modify Tab]
+    [Cancel Tab]
+}
+
+package "External Services" {
+    [Groq API]
+    [SQLite3]
+}
+
+[init_db] --> [SQLite3]
+[add_sample_appointments] --> [SQLite3]
+[book_appointment] --> [SQLite3]
+[view_appointments] --> [SQLite3]
+[modify_appointment] --> [SQLite3]
+[cancel_appointment] --> [SQLite3]
+[check_availability] --> [SQLite3]
+[get_available_slots] --> [SQLite3]
+[hospital_chat] --> [Groq API]
+[hospital_chat] --> [parse_natural_date]
+[hospital_chat] --> [parse_natural_time]
+[hospital_chat] --> [book_appointment]
+[hospital_chat] --> [view_appointments]
+[hospital_chat] --> [check_availability]
+[hospital_chat] --> [modify_appointment]
+[hospital_chat] --> [cancel_appointment]
+[hospital_chat] --> [get_available_slots]
+[Chat Interface] --> [hospital_chat]
+[Book Tab] --> [check_availability]
+[Book Tab] --> [book_appointment]
+[Modify Tab] --> [check_availability]
+[Modify Tab] --> [modify_appointment]
+[Cancel Tab] --> [cancel_appointment]
+[View Tab] --> [get_appointments_data]
+
+@enduml
+
+@startuml ErrorHandling
+!theme plain
+title Error Handling Architecture
+
+start
+:User action;
+decision "Database operation?"
+yes
+:Try-Except block;
+decision "Success?"
+yes
+:COMMIT transaction;
+:Close connection;
+:Return result;
+stop
+no
+:Handle exception;
+:ROLLBACK (if needed);
+:Close connection;
+:Return error message;
+stop
+no
+decision "API call?"
+yes
+:Try-Except block;
+decision "Success?"
+yes
+:Process response;
+:Return result;
+stop
+no
+:Catch exception;
+:Log error;
+:Return error message;
+stop
+no
+decision "Input validation?"
+yes
+:Check format & type;
+decision "Valid?"
+yes
+:Proceed;
+stop
+no
+:Return validation error;
+stop
+
+@enduml
+
+@startuml UseCaseDiagram
+!theme plain
+title Use Case Diagram - Hospital Appointment System
+
+actor User
+actor Admin
+
+rectangle "Hospital Appointment System" {
+    (Book Appointment) as UC1
+    (View Appointments) as UC2
+    (Modify Appointment) as UC3
+    (Cancel Appointment) as UC4
+    (Check Availability) as UC5
+    (Chat with AI) as UC6
+}
+
+User --> UC1
+User --> UC2
+User --> UC3
+User --> UC4
+User --> UC5
+User --> UC6
+
+UC1 ..> UC5: includes
+UC3 ..> UC5: includes
+UC2 ..|> UC1: extends
+
+@enduml
+
+@startuml StateTransition
+!theme plain
+title Appointment State Transitions
+
+[*] --> Available: Slot created
+
+Available --> Booked: book_appointment()
+Available --> Available: check_availability()
+
+Booked --> Rescheduled: modify_appointment()
+Booked --> Cancelled: cancel_appointment()
+Booked --> Completed: Appointment time passed
+
+Rescheduled --> Booked: New date/time set
+Rescheduled --> Cancelled: cancel_appointment()
+
+Cancelled --> [*]
+Completed --> [*]
+
+note right of Available
+  No appointment at this slot
+  Can be booked by users
+end note
+
+note right of Booked
+  Appointment scheduled
+  Can be modified or cancelled
+end note
+
+@enduml
+
+@startuml ClassDiagram
+!theme plain
+title Class-like Structure (Functional)
+
+package "Database Module" {
+    class Database {
+        +init_db()
+        +add_sample_appointments()
+    }
+}
+
+package "Appointment Operations" {
+    class AppointmentManager {
+        +book_appointment(name, date, time, phone)
+        +modify_appointment(id, date, time)
+        +cancel_appointment(id)
+        +view_appointments()
+        +get_appointments_data()
+    }
+}
+
+package "Validation & Checking" {
+    class Validator {
+        +check_availability(date, time)
+        +get_available_slots(date)
+        +parse_natural_date(date_str)
+        +parse_natural_time(time_str)
+    }
+}
+
+package "AI Integration" {
+    class ChatManager {
+        +hospital_chat(user_message)
+        -tools
+        -base_messages
+        -groq_client
+    }
+}
+
+Database --> AppointmentManager: uses
+Validator --> AppointmentManager: validates
+ChatManager --> AppointmentManager: commands
+ChatManager --> Validator: processes
+
+@enduml
+
+@startuml DataFlow
+!theme plain
+title Data Flow Diagram
+
+start
+:User Input:
+- Chat message
+- Form data;
+
+:Input Validation:
+- Check format
+- Check required fields;
+
+:Data Processing:
+- Parse natural language
+- Convert formats
+- Normalize values;
+
+:Business Logic:
+- Check availability
+- Validate business rules
+- Process transaction;
+
+:Database Operations:
+- Query/Insert/Update/Delete
+- Transaction management;
+
+:Response Generation:
+- Format output
+- Create confirmation
+- Handle errors;
+
+:Output Display:
+- Chat message
+- Table update
+- Success/error message;
+
+:User Feedback;
+
+@enduml
+
